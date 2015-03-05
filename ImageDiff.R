@@ -42,8 +42,8 @@ source('/home/roshan/Documents/Acads/GKProject/Codes/writeData.R')
 inputAdd = "/home/roshan/Documents/Acads/GKProject/DATA/training"
 outputAdd = "/home/roshan/Documents/Acads/GKProject/DATA/training"
 
-#initializinf output directory folders
-for(i in 1:4)
+#initializing output directory folders
+for(i in 1:5)
 {
   finalAd <- paste0(outputAdd,"/",toString(i))
   if(!file.exists(finalAd))
@@ -58,30 +58,34 @@ for(i in 1:4)
   }
 }
 
-##patient 1
 
-ID<- 1
-mode <- "flair"
-for(mode in c("flair","mprage","pd","t2"))
+
+
+for(ID in 1:5)
 {
-  img =list()
+ mode <- "flair"
+ for(mode in c("flair","mprage","pd","t2"))
+ {
+   img =list()
 
-  for(i in 1:4)
-  {
-    temp = readData(preAdd,1,"preprocessed",i,mode,0)
-    img = append(img,temp)
-  }
+   for(i in 1:4)
+   {
+     temp = readData(inputAdd,ID,"preprocessed",i,mode,0)
+     img = append(img,temp)
+   }
 
-  for(i in 1:4)
-  {
-    for(j in 1:4)
-    {
-      if(i!=j)
-      {
-        diff = img[i][[1]]-img[j][[1]]
-        writeData(image=diff,address = outputAdd,patientId = ID,iteration1 = i,iteration2 = j, modality = mode)   
-      }
-    }
-  }
+   for(i in 1:4)
+   {
+     for(j in 1:4)
+     {
+       if(i!=j)
+       {
+         diff = img[i][[1]]-img[j][[1]]
+         writeData(image=diff,address = outputAdd,patientId = ID,iteration1 = i,iteration2 = j, modality = mode)   
+       }
+     }
+   }
+ }
+
 }
 
