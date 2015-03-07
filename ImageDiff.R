@@ -73,6 +73,18 @@ for(ID in 1:5)
      temp = readData(inputAdd,ID,"preprocessed",i,mode,0)
      img = append(img,temp)
    }
+   
+   
+   
+   #Registering the images
+   for(i=2:4)
+   {
+     tmp = antsRegistration(fixed = img[1][[1]],moving = img[i][[1]],"Affine")
+     warpedImage = antsApplyTransforms(fixed = img[1][[1]],moving = img[i][[1]],tmp$fwdtransforms)
+     img[i][[1]] = warpedImage
+     
+   }
+   
 
    for(i in 1:4)
    {
@@ -89,3 +101,4 @@ for(ID in 1:5)
 
 }
 
+d = antsRegistration(fixed=img[1][[1]],moving = img[2][[1]],"Affine")
