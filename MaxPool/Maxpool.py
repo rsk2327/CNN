@@ -26,7 +26,7 @@ def max_pool2D(*args, **kwargs):
     return max_pool_2d(*args, **kwargs)
 
 
-def max_pool_2d(input, ds, ignore_border=False, st=None, padding=(0, 0)):
+def max_pool_2d(input, ds,sparsity ,ignore_border=False, st=None, padding=(0, 0)):
     """
     Takes as input a N-D tensor, where N >= 2. It downscales the input image by
     the specified factor, by keeping only the maximum value of non-overlapping
@@ -79,7 +79,7 @@ def max_pool_2d(input, ds, ignore_border=False, st=None, padding=(0, 0)):
 
     # downsample mini-batch of images
     op = DownsampleFactorMax(ds, ignore_border, st=st, padding=padding)
-    output = op(input_4D,1)
+    output = op(input_4D,sparsity)
 
     # restore to original shape
     outshp = tensor.join(0, input.shape[:-2], output.shape[-2:])
