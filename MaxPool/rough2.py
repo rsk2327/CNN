@@ -15,7 +15,7 @@ from Maxpool import *
 
 d = T.dmatrix('d')
 a = numpy.ndarray((4,4))
-e=numpy.asarray([[1,2,7,8],[3,4,1,3],[8,5,3,9],[3,4,5,12]])
+e=numpy.asarray([[1,2,7,8],[3,4,1,3],[8,5,3,9],[3,2,5,12]])
 print e
 f = theano.function([d], max_pool_2d(input=d,ds=(2,2),sparsity =1, ignore_border = True) )
 print f(e)
