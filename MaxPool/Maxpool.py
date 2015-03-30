@@ -297,13 +297,14 @@ class DownsampleFactorMax(Op):
     
 
     def grad(self, inp, grads):
-        x, = inp
+        x,sparse = inp
         gz, = grads
-        maxout = self(x)
+        ## Possible error. Pass list or two separate arguments for self
+        maxout = self([x,sparse])
         return [DownsampleFactorMaxGrad(self.ds,
                                         ignore_border=self.ignore_border,
                                         st=self.st, padding=self.padding)(
-                                            x, maxout, gz)]
+                                            x, maxout, gz,sparse)]
 
     
 
@@ -324,7 +325,7 @@ class DownsampleFactorMaxGrad(Op):
             self.__class__.__name__,
             self.ds, self.st, self.ignore_border, self.padding)
 
-    def make_node(self, x, maxout, gz):
+    def make_node(self, x, maxout, gz,sparsity):
         # make_node should only be called by the grad function of
         # DownsampleFactorMax, so these asserts should not fail.
         assert isinstance(x, Variable) and x.ndim == 4
@@ -333,12 +334,15 @@ class DownsampleFactorMaxGrad(Op):
         x = tensor.as_tensor_variable(x)
         maxout = tensor.as_tensor_variable(maxout)
         gz = tensor.as_tensor_variable(gz)
+        #sparsity =tensor.as_tensor_variable(sparsity)
 
-        return Apply(self, [x, maxout, gz], [x.type()])
+        return Apply(self, [x, maxout, gz,sparsity], [x.type()])
 
     def perform(self, node, inp, out):
-        x, maxout, gz = inp
+        x, maxout, gz,sparsity = inp
         gx_stg, = out
+        
+        #maxout is the output of the maxpooling on the input x.
         # number of pooling output rows
         pr = maxout.shape[-2]
         # number of pooling output cols
@@ -359,25 +363,32 @@ class DownsampleFactorMaxGrad(Op):
             y[:, :, pad_h:(img_rows-pad_h), pad_w:(img_cols-pad_w)] = x
         else:
             y = x
+            
+        # filter size
+        filter_size = (1+sparsity)*(ds0-1) + 1
+            
+        #the gradient is stored in gx. It has the same dimensions as the input x
         gx = numpy.zeros_like(y)
         for n in xrange(x.shape[0]):
             for k in xrange(x.shape[1]):
                 for r in xrange(pr):
-                    row_st = r * st0
-                    row_end = __builtin__.min(row_st + ds0, img_rows)
+                    row_st = r
+                    row_end = __builtin__.min(row_st + filter_size, img_rows)
                     for c in xrange(pc):
                         col_st = c * st1
-                        col_end = __builtin__.min(col_st + ds1, img_cols)
-                        for row_ind in xrange(row_st, row_end):
-                            for col_ind in xrange(col_st, col_end):
+                        col_end = __builtin__.min(col_st + filter_size, img_cols)
+                        # For every row r ,column c in maxout we find the corresponding row_ind,col_ind in y 
+                        # that was the max in that filter. (row_st,row_end) and (col_st,col_end) define the filter region of y corresponding
+                        # to r,c of maxout
+                        for row_ind in xrange(row_st, row_end,sparsity):
+                            for col_ind in xrange(col_st, col_end,sparsity):
                                 if (maxout[n, k, r, c] == y[n, k, row_ind, col_ind]):
                                     gx[n, k, row_ind, col_ind] += gz[n, k, r, c]
         # unpad the image
         gx = gx[:, :, pad_h:(img_rows-pad_h), pad_w:(img_cols-pad_w)]
         gx_stg[0] = gx
 
-    def infer_shape(self, node, in_shapes):
-        return [in_shapes[0]]
+    
 
     def grad(self, inp, grads):
         x, maxout, gz = inp
@@ -394,102 +405,7 @@ class DownsampleFactorMaxGrad(Op):
                     theano.gradients.grad_not_implemented(
                         self, 2, gz, 'Hessian not implemented with padding')]
 
-    def c_code(self, node, name, inp, out, sub):
-        if self.ds != self.st or self.padding != (0, 0):
-            raise theano.gof.utils.MethodNotDefined()
-        x, z, gz = inp
-        gx, = out
-        fail = sub['fail']
-        ignore_border = int(self.ignore_border)
-        ds0, ds1 = self.ds
-        return """
-        int x_typenum = PyArray_ObjectType((PyObject*)%(x)s, 0);
-        int z_typenum = PyArray_ObjectType((PyObject*)%(z)s, 0);
-        int gz_typenum = PyArray_ObjectType((PyObject*)%(gz)s, 0);
-        int x_shp0_usable;
-        int x_shp1_usable;
-        int z_shp0, z_shp1;
-        if ((x_typenum != z_typenum) || (x_typenum != gz_typenum))
-        {
-            PyErr_SetString(PyExc_ValueError, "input types must all match");
-            %(fail)s;
-        }
-        if(PyArray_NDIM(%(x)s)!=4)
-        {
-            PyErr_SetString(PyExc_ValueError, "x must be a 4d ndarray");
-            %(fail)s;
-        }
-        if(PyArray_NDIM(%(z)s)!=4)
-        {
-            PyErr_SetString(PyExc_ValueError, "z must be a 4d ndarray");
-            %(fail)s;
-        }
-        if(PyArray_NDIM(%(gz)s)!=4)
-        {
-            PyErr_SetString(PyExc_ValueError, "gz must be a 4d ndarray");
-            %(fail)s;
-        }
-        z_shp0 = PyArray_DIMS(%(z)s)[2];
-        z_shp1 = PyArray_DIMS(%(z)s)[3];
-        if (%(ignore_border)s)
-        {
-            x_shp0_usable = z_shp0 * %(ds0)s;
-            x_shp1_usable = z_shp1 * %(ds1)s;
-        }
-        else
-        {
-            x_shp0_usable = PyArray_DIMS(%(x)s)[2];
-            x_shp1_usable = PyArray_DIMS(%(x)s)[3];
-        }
-        if ((!%(gx)s)
-          || *PyArray_DIMS(%(gx)s)!=4
-          ||(PyArray_DIMS(%(gx)s)[0] != PyArray_DIMS(%(x)s)[0])
-          ||(PyArray_DIMS(%(gx)s)[1] != PyArray_DIMS(%(x)s)[1])
-          ||(PyArray_DIMS(%(gx)s)[2] != PyArray_DIMS(%(x)s)[2])
-          ||(PyArray_DIMS(%(gx)s)[3] != PyArray_DIMS(%(x)s)[3])
-          )
-        {
-          Py_XDECREF(%(gx)s);
-          %(gx)s = (PyArrayObject*) PyArray_ZEROS(4, PyArray_DIMS(%(x)s), x_typenum,0);
-        }
-
-        for(int b=0;b<PyArray_DIMS(%(x)s)[0];b++){
-          for(int k=0;k<PyArray_DIMS(%(x)s)[1];k++){
-            int mini_i = 0;
-            int zi = 0;
-            for(int i=0;i< x_shp0_usable; i++){
-               int mini_j = 0;
-               int zj = 0;
-               for(int j=0; j< x_shp1_usable; j++){
-                 dtype_%(x)s * __restrict__ xp = ((dtype_%(x)s*)(PyArray_GETPTR4(%(x)s,b,k,i,j)));
-                 dtype_%(gx)s * __restrict__ gxp = ((dtype_%(gx)s*)(PyArray_GETPTR4(%(gx)s,b,k,i,j)));
-                 dtype_%(z)s * __restrict__ zp = ((dtype_%(z)s*)(PyArray_GETPTR4(%(z)s,b,k,zi,zj)));
-                 dtype_%(gz)s * __restrict__ gzp = ((dtype_%(gz)s*)(PyArray_GETPTR4(%(gz)s,b,k,zi,zj)));
-                 gxp[0] = (zp[0] == xp[0]) ? gzp[0] : 0;
-                 mini_j = (mini_j + 1 == %(ds1)s) ? 0 : mini_j+1;
-                 zj += (mini_j == 0);
-              }//for j
-              mini_i = (mini_i + 1 == %(ds0)s) ? 0 : mini_i+1;
-              zi += (mini_i == 0);
-
-              for (int j = x_shp1_usable; j < PyArray_DIMS(%(x)s)[3]; ++j) {
-                dtype_%(gx)s * gxp = ((dtype_%(gx)s*)(PyArray_GETPTR4(%(gx)s,b,k,i,j)));
-                gxp[0] = 0;
-              }
-            }//for i
-
-            for(int i = x_shp0_usable; i < PyArray_DIMS(%(x)s)[2]; i++){
-                for (int j = 0; j < PyArray_DIMS(%(x)s)[3]; ++j) {
-                    dtype_%(gx)s * gxp = ((dtype_%(gx)s*)(PyArray_GETPTR4(%(gx)s,b,k,i,j)));
-                    gxp[0] = 0;
-                }
-            }
-          }//for k
-        }//for b
-        """ % locals()
-
-    def c_code_cache_version(self):
-        return (0, 2)
+    
 
 
 class DownsampleFactorMaxGradGrad(Op):
