@@ -300,7 +300,7 @@ class DownsampleFactorMax(Op):
         x,sparse = inp
         gz, = grads
         ## Possible error. Pass list or two separate arguments for self
-        maxout = self([x,sparse])
+        maxout = self(x,sparse)
         return [DownsampleFactorMaxGrad(self.ds,
                                         ignore_border=self.ignore_border,
                                         st=self.st, padding=self.padding)(
@@ -331,7 +331,7 @@ class DownsampleFactorMaxGrad(Op):
         x = tensor.as_tensor_variable(x)
         maxout = tensor.as_tensor_variable(maxout)
         gz = tensor.as_tensor_variable(gz)
-        #sparsity =tensor.as_tensor_variable(sparsity)
+        sparsity =tensor.as_tensor_variable(sparsity)
 
         return Apply(self, [x, maxout, gz,sparsity], [x.type()])
 
@@ -548,3 +548,10 @@ class DownsampleFactorMaxGradGrad(Op):
 
     def infer_shape(self, node, in_shapes):
         return [in_shapes[0]]
+        
+        
+p = DownsampleFactorMax((2,2),True)
+e1 = tensor.as_tensor_variable(e1)
+t = tensor.as_tensor_variable(t)
+h = p.grad([e1,(2,2)],[t])
+print h
