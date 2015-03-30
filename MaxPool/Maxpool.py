@@ -320,10 +320,7 @@ class DownsampleFactorMaxGrad(Op):
         self.st = tuple(st)
         self.padding = tuple(padding)
 
-    def __str__(self):
-        return '%s{%s, %s, %s, %s}' % (
-            self.__class__.__name__,
-            self.ds, self.st, self.ignore_border, self.padding)
+   
 
     def make_node(self, x, maxout, gz,sparsity):
         # make_node should only be called by the grad function of
