@@ -55,8 +55,8 @@ def max_pool_2d(input, ds,sparsity ,ignore_border=False, st=None, padding=(0, 0)
     if input.ndim < 2:
         raise NotImplementedError('max_pool_2d requires a dimension >= 2')
     if input.ndim == 4:
-        op = DownsampleFactorMax(ds, ignore_border, st=st, padding=padding)
-        output = op(input,sparsity)
+        op = DownsampleFactorMax(ds,sparsity, ignore_border, st=st, padding=padding)
+        output = op(input)
         return output
 
     # extract image dimensions
@@ -78,8 +78,8 @@ def max_pool_2d(input, ds,sparsity ,ignore_border=False, st=None, padding=(0, 0)
     input_4D = tensor.reshape(input, new_shape, ndim=4)
 
     # downsample mini-batch of images
-    op = DownsampleFactorMax(ds, ignore_border, st=st, padding=padding)
-    output = op(input_4D,sparsity)
+    op = DownsampleFactorMax(ds,sparsity, ignore_border, st=st, padding=padding)
+    output = op(input_4D)
 
     # restore to original shape
     outshp = tensor.join(0, input.shape[:-2], output.shape[-2:])
@@ -93,10 +93,10 @@ class DownsampleFactorMax(Op):
     regions.
 
     """
-    __props__ = ('ds', 'ignore_border', 'st', 'padding')
+    __props__ = ('ds', 'sparsity','ignore_border', 'st', 'padding')
 				
     @staticmethod
-    def out_shape(imgshape, ds, sparsity, ignore_border=False, st=None, padding=(0, 0)):
+    def out_shape(imgshape, ds, sparsity , ignore_border=False, st=None, padding=(0, 0)):
         """Return the shape of the output from this op, for input of given
         shape and flags.
 
@@ -180,7 +180,7 @@ class DownsampleFactorMax(Op):
         rval = list(imgshape[:-2]) + [newR, newC]
         return rval
 
-    def __init__(self, ds, ignore_border=False, st=None, padding=(0, 0)):
+    def __init__(self, ds, sparsity, ignore_border=False, st=None, padding=(0, 0)):
         """
         :param ds: downsample factor over rows and column.
                    ds indicates the pool region size.
@@ -203,6 +203,7 @@ class DownsampleFactorMax(Op):
         :type padding: tuple of two ints
 
         """
+        self.sparsity = sparsity
         self.ds = tuple(ds)
         if not all([isinstance(d, int) for d in ds]):
             raise ValueError(
@@ -224,19 +225,18 @@ class DownsampleFactorMax(Op):
 
 # During Theano graph construction the Op creates an Apply node by calling the make_node() method
 # Apply nodes are connected to Variable nodes and take care of the intermediate computations 
-    def make_node(self, x,y):
+    def make_node(self, x):
         if x.type.ndim != 4:
             raise TypeError()
         # TODO: consider restricting the dtype?
         x = tensor.as_tensor_variable(x)
-        y = tensor.as_tensor_variable(y)
-        return gof.Apply(self, [x,y], [x.type()])
-
-
+        return gof.Apply(self, [x], [x.type()])
+        
+    
     def perform(self, node, inp, out):
-        x = inp[0]
-        sparse =inp[1]
+        x, = inp
         z, = out
+        sparse = self.sparsity
         if len(x.shape) != 4:
             raise NotImplementedError(
                 'DownsampleFactorMax requires 4D input for now')
@@ -294,26 +294,123 @@ class DownsampleFactorMax(Op):
                         zz[n, k, r, c] = y[
                             n, k, row_st:row_end:sparse, col_st:col_end:sparse].max()
 
+
+    
     
 
     def grad(self, inp, grads):
-        x,sparse = inp
+        x, = inp
         gz, = grads
         ## Possible error. Pass list or two separate arguments for self
-        maxout = self(x,sparse)
+        maxout = self(x)
         return [DownsampleFactorMaxGrad(self.ds,
                                         ignore_border=self.ignore_border,
                                         st=self.st, padding=self.padding)(
-                                            x, maxout, gz,sparse)]
+                                            x, maxout, gz)]
+                                            
+    def c_code(self, node, name, inp, out, sub):
+        # No implementation is currently for the case where
+        # the stride size and the pooling size are different.
+        # An exception is raised for such a case.
+        if self.ds != self.st or self.padding != (0, 0):
+            raise theano.gof.utils.MethodNotDefined()
+        x, = inp
+        z, = out
+        fail = sub['fail']
+        ignore_border = int(self.ignore_border)
+        ds0, ds1 = self.ds
+        sparse = self.sparsity
+        return """
+        
+        int typenum = PyArray_ObjectType((PyObject*)%(x)s, 0);
+        int x_shp0_usable;
+        int x_shp1_usable;
+        int z_shp0, z_shp1;
+        int filter_size = ((1 + %(sparse)s)*( %(ds0)s -1) + 1);
+       
+        if(PyArray_NDIM(%(x)s)!=4)
+        {
+            PyErr_SetString(PyExc_ValueError, "x must be a 4d ndarray");
+            %(fail)s;
+        }
+        
+        z_shp0 = PyArray_DIMS(%(x)s)[2] - filter_size + 1;
+        z_shp1 = PyArray_DIMS(%(x)s)[3] - filter_size + 1;
+        if (%(ignore_border)s)
+        {
+            x_shp0_usable = PyArray_DIMS(%(x)s)[2] ;
+            x_shp1_usable = PyArray_DIMS(%(x)s)[3] ;
+        }
+        else
+        {
+            z_shp0 += (PyArray_DIMS(%(x)s)[2] %% %(ds0)s) ? 1 : 0;
+            z_shp1 += (PyArray_DIMS(%(x)s)[3] %% %(ds1)s) ? 1 : 0;
+            x_shp0_usable = PyArray_DIMS(%(x)s)[2];
+            x_shp1_usable = PyArray_DIMS(%(x)s)[3];
+        }
+        
+        if ((!%(z)s)
+          || *PyArray_DIMS(%(z)s)!=4
+          ||(PyArray_DIMS(%(z)s)[0] != PyArray_DIMS(%(x)s)[0])
+          ||(PyArray_DIMS(%(z)s)[1] != PyArray_DIMS(%(x)s)[1])
+          ||(PyArray_DIMS(%(z)s)[2] != z_shp0)
+          ||(PyArray_DIMS(%(z)s)[3] != z_shp1)
+          )
+        {
+          
+          if (%(z)s) Py_XDECREF(%(z)s);
+          npy_intp dims[4] = {0,0,0,0};
+          dims[0]=PyArray_DIMS(%(x)s)[0];
+          dims[1]=PyArray_DIMS(%(x)s)[1];
+          dims[2]=z_shp0;
+          dims[3]=z_shp1;
+          //TODO: zeros not necessary
+         
+          %(z)s = (PyArrayObject*) PyArray_ZEROS(4, dims, typenum,0);
+        }
+        
+        if (z_shp0 && z_shp1)
+        {
+            for(int b=0;b<PyArray_DIMS(%(x)s)[0];b++){
+              for(int k=0;k<PyArray_DIMS(%(x)s)[1];k++){
+              
+                for(int zi=0;zi<z_shp0;zi++)
+                {
+                    for(int zj=0;zj<z_shp1;zj++)
+                    {
+                        dtype_%(z)s * __restrict__ z = ((dtype_%(z)s*)(PyArray_GETPTR4(%(z)s,b,k,zi,zj)));
+                        // Assuming the matrix elements to be positive
+                        double max = 0;
+                        for(int i=zi;i<zi+filter_size;i+=(%(sparse)s+1))
+                        {
+                          for(int j=zj;j<zj+filter_size;j+=(%(sparse)s+1))
+                            {
+                               dtype_%(x)s a = ((dtype_%(x)s*)(PyArray_GETPTR4(%(x)s,b,k,i,j)))[0];
+                               max = (a>max)?a:max;
+                            }
+                        }
+                        z[0] = max;
+                    }
+                }
+                
+                
+                
+              }
+            }
+        }
+        """ % locals()
+        
+   
 
     
 
 
 class DownsampleFactorMaxGrad(Op):
-    __props__ = ('ds', 'ignore_border', 'st', 'padding')
+    __props__ = ('ds','sparsity', 'ignore_border', 'st', 'padding')
 
-    def __init__(self, ds, ignore_border, st=None, padding=(0, 0)):
+    def __init__(self, ds,sparsity, ignore_border, st=None, padding=(0, 0)):
         self.ds = tuple(ds)
+        self.sparsity =sparsity
         self.ignore_border = ignore_border
         if st is None:
             st = ds
@@ -322,7 +419,7 @@ class DownsampleFactorMaxGrad(Op):
 
    
 
-    def make_node(self, x, maxout, gz,sparsity):
+    def make_node(self, x, maxout, gz):
         # make_node should only be called by the grad function of
         # DownsampleFactorMax, so these asserts should not fail.
         assert isinstance(x, Variable) and x.ndim == 4
@@ -331,12 +428,11 @@ class DownsampleFactorMaxGrad(Op):
         x = tensor.as_tensor_variable(x)
         maxout = tensor.as_tensor_variable(maxout)
         gz = tensor.as_tensor_variable(gz)
-        sparsity =tensor.as_tensor_variable(sparsity)
-
-        return Apply(self, [x, maxout, gz,sparsity], [x.type()])
+        
+        return Apply(self, [x, maxout, gz], [x.type()])
 
     def perform(self, node, inp, out):
-        x, maxout, gz,sparsity = inp
+        x, maxout, gz = inp
         gx_stg, = out
         
         #maxout is the output of the maxpooling on the input x.
@@ -348,6 +444,7 @@ class DownsampleFactorMaxGrad(Op):
         st0, st1 = self.st
         pad_h = self.padding[0]
         pad_w = self.padding[1]
+        sparsity = self.sparsity
         img_rows = x.shape[-2] + 2 * pad_h
         img_cols = x.shape[-1] + 2 * pad_w
 
@@ -550,8 +647,3 @@ class DownsampleFactorMaxGradGrad(Op):
         return [in_shapes[0]]
         
         
-p = DownsampleFactorMax((2,2),True)
-e1 = tensor.as_tensor_variable(e1)
-t = tensor.as_tensor_variable(t)
-h = p.grad([e1,(2,2)],[t])
-print h
