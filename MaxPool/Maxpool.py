@@ -303,7 +303,7 @@ class DownsampleFactorMax(Op):
         gz, = grads
         ## Possible error. Pass list or two separate arguments for self
         maxout = self(x)
-        return [DownsampleFactorMaxGrad(self.ds,
+        return [DownsampleFactorMaxGrad(self.ds,self.sparsity,
                                         ignore_border=self.ignore_border,
                                         st=self.st, padding=self.padding)(
                                             x, maxout, gz)]
@@ -481,6 +481,9 @@ class DownsampleFactorMaxGrad(Op):
         # unpad the image
         gx = gx[:, :, pad_h:(img_rows-pad_h), pad_w:(img_cols-pad_w)]
         gx_stg[0] = gx
+        
+    
+
 
     
 
@@ -491,7 +494,7 @@ class DownsampleFactorMaxGrad(Op):
             return [theano.tensor.zeros_like(x),
                     theano.tensor.zeros_like(maxout),
                     DownsampleFactorMaxGradGrad(
-                        self.ds, ignore_border=self.ignore_border,
+                        self.ds,self.sparsity, ignore_border=self.ignore_border,
                         st=self.st)(x, maxout, ggx)]
         else:
             return [theano.tensor.zeros_like(x),
@@ -505,7 +508,7 @@ class DownsampleFactorMaxGrad(Op):
 class DownsampleFactorMaxGradGrad(Op):
 
     @staticmethod
-    def out_shape(imgshape, ds, ignore_border=False, st=None):
+    def out_shape(imgshape, ds, sparsity,ignore_border=False, st=None):
         """Return the shape of the output from this op, for input of given
         shape and flags.
 
@@ -534,10 +537,16 @@ class DownsampleFactorMaxGradGrad(Op):
         if len(imgshape) < 2:
             raise TypeError('imgshape must have at least two elements '
                             '(rows, cols)')
+                            
+        filter_size = (1+sparsity)*(ds[0]-1) + 1
+
 
         if st is None:
             st = ds
         r, c = imgshape[-2:]
+        
+        newR = r - filter_size + 1
+        newC = c - filter_size + 1
 
         if ignore_border:
             out_r = (r - ds[0]) // st[0] + 1
@@ -571,29 +580,32 @@ class DownsampleFactorMaxGradGrad(Op):
             else:
                 nc = max(0, (c - 1 - ds[1]) // st[1] + 1) + 1
 
-        rval = list(imgshape[:-2]) + [nr, nc]
+        rval = list(imgshape[:-2]) + [newR, newC]
         return rval
 
-    def __init__(self, ds, ignore_border, st=None):
+    def __init__(self, ds,sparsity, ignore_border, st=None):
         self.ds = tuple(ds)
+        self.sparsity = sparsity
         self.ignore_border = ignore_border
         if st is None:
             st = ds
         self.st = tuple(st)
 
-    def __eq__(self, other):
-        return (type(self) == type(other)
-                and self.ds == other.ds
-                and self.st == other.st
-                and self.ignore_border == other.ignore_border)
-
-    def __hash__(self):
-        return hash(type(self)) ^ hash(self.ds) ^ \
-            hash(self.st) ^ hash(self.ignore_border)
-
-    def __str__(self):
-        return '%s{%s,%s,%s}' % (self.__class__.__name__,
-                                 self.ds, self.st, self.ignore_border)
+#==============================================================================
+#     def __eq__(self, other):
+#         return (type(self) == type(other)
+#                 and self.ds == other.ds
+#                 and self.st == other.st
+#                 and self.ignore_border == other.ignore_border)
+# 
+#     def __hash__(self):
+#         return hash(type(self)) ^ hash(self.ds) ^ \
+#             hash(self.st) ^ hash(self.ignore_border)
+# 
+#     def __str__(self):
+#         return '%s{%s,%s,%s}' % (self.__class__.__name__,
+#                                  self.ds, self.st, self.ignore_border)
+#==============================================================================
 
     def make_node(self, x, maxout, gz):
         # make_node should only be called by the grad function of
@@ -629,21 +641,33 @@ class DownsampleFactorMaxGradGrad(Op):
         st0, st1 = self.st
         img_rows = x.shape[-2]
         img_cols = x.shape[-1]
+        sparsity  = self.sparsity
+        filter_size = (1+sparsity)*(ds0-1) + 1
 
         for n in xrange(x.shape[0]):
             for k in xrange(x.shape[1]):
                 for r in xrange(pr):
-                    row_st = r * st0
-                    row_end = __builtin__.min(row_st + ds0, img_rows)
+                    # Starts with r itself and r*st0
+                    row_st = r 
+                    row_end = __builtin__.min(row_st + filter_size, img_rows)
                     for c in xrange(pc):
-                        col_st = c * st1
-                        col_end = __builtin__.min(col_st + ds1, img_cols)
-                        for row_ind in xrange(row_st, row_end):
-                            for col_ind in xrange(col_st, col_end):
+                        #Starts with c instead of c*st1
+                        col_st = c 
+                        col_end = __builtin__.min(col_st + filter_size, img_cols)
+                        for row_ind in xrange(row_st, row_end,sparsity):
+                            for col_ind in xrange(col_st, col_end,sparsity):
                                 if (maxout[n, k, r, c] == x[n, k, row_ind, col_ind]):
                                     ggz[n, k, r, c] = ggx[n, k, row_ind, col_ind]
+                                    
+                                    
+        
+                                    
+                                    
+    
 
-    def infer_shape(self, node, in_shapes):
-        return [in_shapes[0]]
+#==============================================================================
+#     def infer_shape(self, node, in_shapes):
+#         return [in_shapes[0]]
+#==============================================================================
         
         
