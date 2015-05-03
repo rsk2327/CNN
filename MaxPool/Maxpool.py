@@ -483,7 +483,107 @@ class DownsampleFactorMaxGrad(Op):
         gx_stg[0] = gx
         
     
+    def c_code(self, node, name, inp, out, sub):
+        if self.ds != self.st or self.padding != (0, 0):
+            raise theano.gof.utils.MethodNotDefined()
+        x, z, gz = inp
+        gx, = out
+        fail = sub['fail']
+        ignore_border = int(self.ignore_border)
+        ds0, ds1 = self.ds
+        sparsity  = self.sparsity
+        return """
+        //
+        int x_typenum = PyArray_ObjectType((PyObject*)%(x)s, 0);
+        int z_typenum = PyArray_ObjectType((PyObject*)%(z)s, 0);
+        int gz_typenum = PyArray_ObjectType((PyObject*)%(gz)s, 0);
+        int x_shp0_usable;
+        int x_shp1_usable;
+        int z_shp0, z_shp1;
+        int filter_size = (1+%(sparsity)s)*( %(ds0)s - 1) + 1;
+        if ((x_typenum != z_typenum) || (x_typenum != gz_typenum))
+        {
+            PyErr_SetString(PyExc_ValueError, "input types must all match");
+            %(fail)s;
+        }
+        if(PyArray_NDIM(%(x)s)!=4)
+        {
+            PyErr_SetString(PyExc_ValueError, "x must be a 4d ndarray");
+            %(fail)s;
+        }
+        if(PyArray_NDIM(%(z)s)!=4)
+        {
+            PyErr_SetString(PyExc_ValueError, "z must be a 4d ndarray");
+            %(fail)s;
+        }
+        if(PyArray_NDIM(%(gz)s)!=4)
+        {
+            PyErr_SetString(PyExc_ValueError, "gz must be a 4d ndarray");
+            %(fail)s;
+        }
+        z_shp0 = PyArray_DIMS(%(z)s)[2];
+        z_shp1 = PyArray_DIMS(%(z)s)[3];
+        if (%(ignore_border)s)
+        {
+            x_shp0_usable = z_shp0 * %(ds0)s;
+            x_shp1_usable = z_shp1 * %(ds1)s;
+        }
+        else
+        {
+            x_shp0_usable = PyArray_DIMS(%(x)s)[2];
+            x_shp1_usable = PyArray_DIMS(%(x)s)[3];
+        }
+        if ((!%(gx)s)
+          || *PyArray_DIMS(%(gx)s)!=4
+          ||(PyArray_DIMS(%(gx)s)[0] != PyArray_DIMS(%(x)s)[0])
+          ||(PyArray_DIMS(%(gx)s)[1] != PyArray_DIMS(%(x)s)[1])
+          ||(PyArray_DIMS(%(gx)s)[2] != PyArray_DIMS(%(x)s)[2])
+          ||(PyArray_DIMS(%(gx)s)[3] != PyArray_DIMS(%(x)s)[3])
+          )
+        {
+        // if gx criteria not met then create new instance of gx
+          Py_XDECREF(%(gx)s);
+          %(gx)s = (PyArrayObject*) PyArray_ZEROS(4, PyArray_DIMS(%(x)s), x_typenum,0);
+        }
 
+        for(int b=0;b<PyArray_DIMS(%(x)s)[0];b++){
+          for(int k=0;k<PyArray_DIMS(%(x)s)[1];k++){
+            for(int zi=0;zi<z_shp0;zi++)
+            {
+              int rowStart = zi;
+              int rowEnd = zi + filter_size;
+               for(int zj=0;zj<z_shp1;zj++)
+               {
+                  int colStart = zj;
+                  int colEnd = zj + filter_size;
+                  for(int row_ind = rowStart;row_ind<rowEnd;row_ind+= (%(sparity)s + 1 ))
+                  {
+                      for(int col_ind = colStart;col_ind<colEnd; col_ind+= (%(sparsity)s + 1) )
+                      {
+                        dtype_%(x)s * __restrict__ xp = ((dtype_%(x)s*)(PyArray_GETPTR4(%(x)s,b,k,row_ind,col_ind)));
+                        dtype_%(gx)s * __restrict__ gxp = ((dtype_%(gx)s*)(PyArray_GETPTR4(%(gx)s,b,k,row_ind,col_ind)));
+                        dtype_%(z)s * __restrict__ zp = ((dtype_%(z)s*)(PyArray_GETPTR4(%(z)s,b,k,zi,zj)));
+                        dtype_%(gz)s * __restrict__ gzp = ((dtype_%(gz)s*)(PyArray_GETPTR4(%(gz)s,b,k,zi,zj)));
+                        
+                        //only if the x[row_ind,col_ind] = z[zi,zj], should we shift the gradient from gzp to gxp
+                        gxp[0] = (xp[0]==zp[0])?gzp[0]:0;
+                      
+                      
+                      }
+                  
+                  }
+               
+               
+               }
+            
+            }
+            
+          }//for k
+        }//for b
+        """ % locals()
+        
+    
+    
 
     
 
